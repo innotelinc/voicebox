@@ -65,6 +65,7 @@ async def create_generation(
     status: str = "completed",
     engine: Optional[str] = "qwen",
     model_size: Optional[str] = None,
+    source: str = "manual",
 ) -> GenerationResponse:
     """
     Create a new generation history entry.
@@ -82,6 +83,10 @@ async def create_generation(
         status: Generation status (generating, completed, failed)
         engine: TTS engine used (qwen, luxtts, chatterbox, chatterbox_turbo)
         model_size: Model size variant (1.7B, 0.6B) — only relevant for qwen
+        source: Origin marker stored on the row. ``"manual"`` for regular
+            /generate calls; ``"personality_speak"`` for rows created
+            by the /profiles/{id}/speak endpoint. Enables filtering the
+            history view for personality-driven output.
 
     Returns:
         Created generation entry
@@ -98,6 +103,7 @@ async def create_generation(
         engine=engine,
         model_size=model_size,
         status=status,
+        source=source,
         created_at=datetime.utcnow(),
     )
 
@@ -319,6 +325,10 @@ async def delete_generations_by_profile(
     
     count = 0
     for generation in generations:
+        # Delete associated version files and rows first
+        from . import versions as versions_mod
+        versions_mod.delete_versions_for_generation(generation.id, db)
+
         # Delete audio file
         audio_path = config.resolve_storage_path(generation.audio_path)
         if audio_path is not None and audio_path.exists():

@@ -21,7 +21,6 @@ from .base import (
 )
 from ..utils.cache import get_cache_key, get_cached_voice_prompt, cache_voice_prompt
 from ..utils.audio import load_audio
-from ..utils.hf_offline_patch import force_offline_if_cached
 
 
 class PyTorchTTSBackend:
@@ -106,21 +105,20 @@ class PyTorchTTSBackend:
             from huggingface_hub import constants as hf_constants
             tts_cache_dir = hf_constants.HF_HUB_CACHE
 
-            with force_offline_if_cached(is_cached, model_name):
-                if self.device == "cpu":
-                    self.model = Qwen3TTSModel.from_pretrained(
-                        model_path,
-                        cache_dir=tts_cache_dir,
-                        torch_dtype=torch.float32,
-                        low_cpu_mem_usage=False,
-                    )
-                else:
-                    self.model = Qwen3TTSModel.from_pretrained(
-                        model_path,
-                        cache_dir=tts_cache_dir,
-                        device_map=self.device,
-                        torch_dtype=torch.bfloat16,
-                    )
+            if self.device == "cpu":
+                self.model = Qwen3TTSModel.from_pretrained(
+                    model_path,
+                    cache_dir=tts_cache_dir,
+                    torch_dtype=torch.float32,
+                    low_cpu_mem_usage=False,
+                )
+            else:
+                self.model = Qwen3TTSModel.from_pretrained(
+                    model_path,
+                    cache_dir=tts_cache_dir,
+                    device_map=self.device,
+                    torch_dtype=torch.bfloat16,
+                )
 
         self._current_model_size = model_size
         self.model_size = model_size
@@ -174,6 +172,10 @@ class PyTorchTTSBackend:
 
         def _create_prompt_sync():
             """Run synchronous voice prompt creation in thread pool."""
+            # Inference runs with the process's default HF_HUB_OFFLINE
+            # state. Forcing offline here (issue #462) regressed online
+            # users whose libraries issue legitimate metadata lookups
+            # during voice-prompt creation.
             return self.model.create_voice_clone_prompt(
                 ref_audio=str(audio_path),
                 ref_text=reference_text,
@@ -227,7 +229,8 @@ class PyTorchTTSBackend:
             if seed is not None:
                 manual_seed(seed, self.device)
 
-            # Generate audio - this is the blocking operation
+            # See _create_prompt_sync comment — inference runs with the
+            # process's default HF_HUB_OFFLINE state (issue #462).
             wavs, sample_rate = self.model.generate_voice_clone(
                 text=text,
                 voice_clone_prompt=voice_prompt,
@@ -292,9 +295,8 @@ class PyTorchSTTBackend:
             model_name = WHISPER_HF_REPOS.get(model_size, f"openai/whisper-{model_size}")
             logger.info("Loading Whisper model %s on %s...", model_size, self.device)
 
-            with force_offline_if_cached(is_cached, progress_model_name):
-                self.processor = WhisperProcessor.from_pretrained(model_name)
-                self.model = WhisperForConditionalGeneration.from_pretrained(model_name)
+            self.processor = WhisperProcessor.from_pretrained(model_name)
+            self.model = WhisperForConditionalGeneration.from_pretrained(model_name)
 
         self.model.to(self.device)
         self.model_size = model_size
@@ -334,8 +336,12 @@ class PyTorchSTTBackend:
         def _transcribe_sync():
             """Run synchronous transcription in thread pool."""
             # Load audio
-            audio, sr = load_audio(audio_path, sample_rate=16000)
+            audio, _sr = load_audio(audio_path, sample_rate=16000)
 
+            # Inference runs with the process's default HF_HUB_OFFLINE
+            # state — forcing offline here (issue #462) broke online users
+            # whose `get_decoder_prompt_ids` / tokenizer calls issue
+            # legitimate metadata lookups.
             # Process audio
             inputs = self.processor(
                 audio,

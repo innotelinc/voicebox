@@ -135,13 +135,14 @@ async def migrate_models(request: models.ModelMigrateRequest):
     if destination.resolve().is_relative_to(source.resolve()):
         raise HTTPException(status_code=400, detail="Destination cannot be inside the current cache directory")
 
+    progress_manager = get_progress_manager()
     model_dirs = [d for d in source.iterdir() if d.name.startswith("models--") and d.is_dir()]
     if not model_dirs:
+        progress_manager.update_progress("migration", 1, 1, status="complete")
+        progress_manager.mark_complete("migration")
         return {"moved": 0, "errors": [], "source": str(source), "destination": str(destination)}
 
     destination.mkdir(parents=True, exist_ok=True)
-
-    progress_manager = get_progress_manager()
 
     same_fs = False
     try:
@@ -230,7 +231,10 @@ async def get_model_status():
     backend_type = get_backend_type()
     task_manager = get_task_manager()
 
-    active_download_names = {task.model_name for task in task_manager.get_active_downloads()}
+    # Pending only — an errored task stays in the active list for the
+    # error/retry UI, but reporting it as "downloading" here would mask
+    # the model's real cache state until the app restarts (issue #925).
+    active_download_names = {task.model_name for task in task_manager.get_pending_downloads()}
 
     try:
         from huggingface_hub import scan_cache_dir

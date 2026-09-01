@@ -1,5 +1,8 @@
 """Audio file serving endpoints."""
 
+import mimetypes
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -9,6 +12,16 @@ from ..services import history
 from ..database import get_db
 
 router = APIRouter()
+
+
+def _audio_media_type(path: Path) -> str:
+    """Derive the Content-Type from the file extension.
+
+    Imported audio retains its source format (.mp3, .m4a, .ogg, …) so a
+    blanket ``audio/wav`` would mislead strict clients trying to decode
+    via the response header instead of sniffing the bytes."""
+    guessed, _ = mimetypes.guess_type(path.name)
+    return guessed or "audio/wav"
 
 
 @router.get("/audio/version/{version_id}")
@@ -21,13 +34,13 @@ async def get_version_audio(version_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Version not found")
 
     audio_path = config.resolve_storage_path(version.audio_path)
-    if audio_path is None or not audio_path.exists():
+    if audio_path is None or not audio_path.is_file():
         raise HTTPException(status_code=404, detail="Audio file not found")
 
     return FileResponse(
         audio_path,
-        media_type="audio/wav",
-        filename=f"generation_{version.generation_id}_{version.label}.wav",
+        media_type=_audio_media_type(audio_path),
+        filename=f"generation_{version.generation_id}_{version.label}{audio_path.suffix}",
     )
 
 
@@ -39,13 +52,18 @@ async def get_audio(generation_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Generation not found")
 
     audio_path = config.resolve_storage_path(generation.audio_path)
-    if audio_path is None or not audio_path.exists():
-        raise HTTPException(status_code=404, detail="Audio file not found")
+    if audio_path is None or not audio_path.is_file():
+        detail = (
+            "Generation failed; no audio available"
+            if generation.status == "failed"
+            else "Audio file not found"
+        )
+        raise HTTPException(status_code=404, detail=detail)
 
     return FileResponse(
         audio_path,
-        media_type="audio/wav",
-        filename=f"generation_{generation_id}.wav",
+        media_type=_audio_media_type(audio_path),
+        filename=f"generation_{generation_id}{audio_path.suffix}",
     )
 
 
@@ -59,7 +77,7 @@ async def get_sample_audio(sample_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Sample not found")
 
     audio_path = config.resolve_storage_path(sample.audio_path)
-    if audio_path is None or not audio_path.exists():
+    if audio_path is None or not audio_path.is_file():
         raise HTTPException(status_code=404, detail="Audio file not found")
 
     return FileResponse(
